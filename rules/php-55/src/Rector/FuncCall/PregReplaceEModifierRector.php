@@ -7,7 +7,9 @@ namespace Rector\Php55\Rector\FuncCall;
 use Nette\Utils\Strings;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
+use PhpParser\Node\Expr\Array_;
 use PhpParser\Node\Expr\ArrayDimFetch;
+use PhpParser\Node\Expr\ArrayItem;
 use PhpParser\Node\Expr\Closure;
 use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Expr\Variable;
@@ -87,6 +89,19 @@ PHP
             return null;
         }
 
+        $patternNode = $node->args[0]->value;
+
+        if ($patternNode instanceof String_) {
+            return $this->refactorWithStringPattern($node);
+        } elseif ($patternNode instanceof Array_) {
+            return $this->refactorWithPatternArray($node);
+        }
+
+        return null;
+    }
+
+    private function refactorWithStringPattern(Node $node): ?Node
+    {
         $pattern = $this->getValue($node->args[0]->value);
         $delimiter = $pattern[0];
 
@@ -106,6 +121,45 @@ PHP
 
         $node->name = new Name('preg_replace_callback');
         $node->args[0]->value = new String_($patternWithoutE);
+        $node->args[1]->value = $anonymousFunction;
+
+        return $node;
+    }
+
+    private function refactorWithPatternArray(Node $node): ?Node
+    {
+        $patterns = $this->getValue($node->args[0]->value);
+        $patternsWithoutE = [];
+
+        foreach ($patterns as $pattern) {
+            $delimiter = $pattern[0];
+            /** @var string $modifiers */
+            $modifiers = Strings::after($pattern, $delimiter, -1);
+            if (! Strings::contains($modifiers, 'e')) {
+                continue;
+            }
+            $modifiersWithoutE = Strings::replace($modifiers, '#e#');
+            $patternWithoutE = Strings::before($pattern, $delimiter, -1) . $delimiter . $modifiersWithoutE;
+            $patternsWithoutE[] = new ArrayItem(new String_($patternWithoutE));
+        }
+
+        if (count($patternsWithoutE) === 0) {
+            // no e modifiers
+            return null;
+        }
+
+        if (count($patternsWithoutE) !== count($patterns)) {
+            // all patterns should have e modifier
+            throw new ShouldNotHappenException();
+        }
+
+        $anonymousFunction = $this->createAnonymousFunctionFromString($node->args[1]->value);
+        if ($anonymousFunction === null) {
+            return null;
+        }
+
+        $node->name = new Name('preg_replace_callback');
+        $node->args[0]->value = new Array_($patternsWithoutE);
         $node->args[1]->value = $anonymousFunction;
 
         return $node;
